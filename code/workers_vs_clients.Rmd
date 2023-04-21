@@ -1,0 +1,187 @@
+---
+title: "Worker Client Comparison"
+author: "Mykyta Solonko"
+date: "3/1/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(viridis)
+library(countrycode)
+library(dplyr)
+```
+
+```{r}
+semrush <- read.csv("../data/Sync/data/annual/all_data.csv")
+similarweb <- read.csv("../data/Sync/data/similarweb/all_data.csv")
+```
+
+
+```{r}
+show_top_n_countries_by_year <- function(frame, n) {
+  # sum traffic by country & year
+  workers <- frame[frame$subcategory == "worker" | frame$subcategory == "annotate",]
+  clients <- frame[frame$subcategory == "client",]
+
+  workers <- aggregate(workers$traffic, list(workers$year, workers$country), sum)
+  colnames(workers) <- c("year", "country", "traffic")
+  clients <- aggregate(clients$traffic, list(clients$year, clients$country), sum)
+  colnames(clients) <- c("year", "country", "traffic")
+  
+  # sort and take top n
+  workers <- workers[order(workers$traffic), ]
+  workers <- by(workers, workers["year"], tail, n=n)
+  workers <- do.call(rbind, workers)
+  
+  clients <- clients[order(clients$traffic), ]
+  clients <- by(clients, clients["year"], tail, n=n)
+  clients <- do.call(rbind, clients)
+  
+  # Create a named color palette for the countries
+  n_colors <- length(unique(c(workers$country, clients$country)))  # Number of colors needed, same as the value of `n`
+  palette <- viridis(n_colors, alpha = 1, begin = 0, end = 1, direction = 1, option = "D")
+  names(palette) <- unique(c(workers$country, clients$country))
+  
+
+  # make the plot
+print(ggplot(workers, aes(year, fill = country)) +
+        geom_bar(aes(weight = sqrt(traffic)), position = "fill") +
+        geom_text(aes(label = country, y = sqrt(traffic) / 2), 
+                  position = position_fill(vjust = 0.5), color = "white", size = 4) +
+        ggtitle("Sqrt Worker Traffic Top 5 Countries") +
+        scale_x_continuous(breaks = round(seq(2017, 2022, by = 1), 1)) +
+        ylab("traffic") +
+        theme(legend.position="none") +
+        scale_fill_manual(values = palette))
+
+print(ggplot(clients, aes(year, fill = country)) +
+        geom_bar(aes(weight = sqrt(traffic)), position = "fill") +
+        geom_text(aes(label = country, y = sqrt(traffic) / 2), 
+                  position = position_fill(vjust = 0.5), color = "white", size = 4) +
+        ggtitle("Sqrt Client Traffic Top 5 Countries") +
+        scale_x_continuous(breaks = round(seq(2017, 2022, by = 1), 1)) +
+        ylab("traffic") +
+        theme(legend.position="none") +
+        scale_fill_manual(values = palette))
+
+}
+
+```
+
+
+```{r}
+show_top_n_countries_by_year(semrush, 5)
+```
+
+
+
+
+```{r}
+get_specific_companies <- function(frame, specs) {
+  result <- data.frame()
+  for (c in specs) {
+    company_name <- c[1]
+    subcats <- c[2:length(c)]
+    rows <- frame[which(frame$company==company_name & frame$subcategory %in% subcats), ]
+    result <- rbind(result, rows)
+  }
+  return(result)
+}
+
+```
+
+
+```{r}
+plot_workers_clients_map <- function(df, semrush_data=T) {
+  # get companies of interest (recruiting)
+  companies <- list(c("mturk", "worker", "client"),
+               c("appen", "annotate", "client"),
+               c("hive", "worker", "client"),
+               c("scale", "worker", "client"),
+               c("toloka", "worker", "client"))
+
+
+  df <- get_specific_companies(df, companies)
+  
+  # split into workers and clients
+  workers <- df[df$subcategory == "worker" | df$subcategory == "annotate",]
+  clients <- df[df$subcategory == "client",]
+
+  # either sum the traffic for semrush or take the mean country traffic share for similarweb
+  if (semrush_data) {
+    worker_traffic <- workers %>%
+      group_by(country) %>%
+      summarise(traffic = sum(traffic))
+  
+    client_traffic <- clients %>%
+      group_by(country) %>%
+      summarise(traffic = sum(traffic))
+  }
+  else {
+    worker_traffic <- workers %>%
+      group_by(country) %>%
+      summarise(traffic = mean(country_traffic_share))
+  
+    client_traffic <- clients %>%
+      group_by(country) %>%
+      summarise(traffic = mean(country_traffic_share))
+  }
+
+  dat <- merge(worker_traffic, client_traffic, by = "country")
+
+  names(dat)[names(dat) == "traffic.x"] <- "traffic_w"
+  names(dat)[names(dat) == "traffic.y"] <- "traffic_c"
+
+  # convert iso code to country name
+  dat$country <- countrycode(dat$country, "iso2c", "country.name")
+
+
+  # to match world map naming
+  dat[dat$country == "United States", "country"] <- "USA"
+  dat[dat$country == "United Kingdom", "country"] <- "UK"
+  
+ 
+  # Load world map data
+  world <- map_data("world")
+  merged_data <- world %>%
+  left_join(dat, by = c("region" = "country"))
+
+
+  # Create worker plot
+  print(ggplot(merged_data, aes(x = long, y = lat, group = group, fill = log(traffic_w))) +
+    geom_polygon(color = "gray40") +
+     scale_fill_gradient(low = "green", high = "red", na.value = "gray", name = "Log Worker Traffic") +
+  
+    coord_fixed(1.3) +
+    labs(title = "Microtask Platform Worker Traffic",
+         x = "", y = "")+
+    expand_limits(x = c(-180, 180), y = c(-90, 90)) +
+    theme(plot.background = element_rect(fill = "white")))
+  
+  # Create client plot
+  print(ggplot(merged_data, aes(x = long, y = lat, group = group, fill = log(traffic_c))) +
+    geom_polygon(color = "gray40") +
+     scale_fill_gradient(low = "green", high = "red", na.value = "gray", name = "Log Client Traffic") +
+  
+    coord_fixed(1.3) +
+    labs(title = "Microtask Platform Client Traffic",
+         x = "", y = "")+
+    expand_limits(x = c(-180, 180), y = c(-90, 90)) +
+    theme(plot.background = element_rect(fill = "white")))
+} 
+```
+
+
+```{r}
+plot_workers_clients_map(semrush, T)
+```
+
+```{r}
+plot_workers_clients_map(similarweb, F)
+```

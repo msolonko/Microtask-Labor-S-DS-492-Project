@@ -1,0 +1,155 @@
+---
+title: "Analysis"
+author: "Mykyta Solonko"
+date: "2/3/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(stringr)
+library(r2r)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(ggrepel)
+
+```
+
+
+```{r}
+df <- read.csv(file = '../data/Sync/data/annual/all_data.csv')
+dfm <- read.csv(file = '../data/Sync/data/monthly/all_data.csv')
+```
+
+
+```{r}
+plot_traffic <- function(frame) {
+  res <- aggregate(frame$traffic, list(frame$year, frame$company), sum)
+  colnames(res) <- c("year", "company", "traffic")
+  ggplot(res ,aes(year,fill=company))+geom_bar(aes(weight=traffic),position="stack") + ggtitle("Market Traffic By Year")+scale_x_continuous(breaks = round(seq(2017, 2022, by = 1),1)) + ylab("traffic") + theme(legend.key.size = unit(0.35, 'cm'))
+}
+
+plot_traffic_monthly <- function(frame) {
+  res <- aggregate(frame$traffic, list(frame$year, frame$month), sum)
+  colnames(res) <- c("year", "month", "traffic")
+  res$date <- as.Date(paste(res$year, res$month, "1", sep="-"), format="%Y-%m-%d")
+  ggplot(res, aes(x=date, y=traffic)) +
+  geom_line() +
+  xlab("Date") +
+  ylab("Traffic") +
+  ggtitle("Monthly Traffic Over Time")
+}
+
+
+plot_dominance <- function(frame) {
+  res <- aggregate(frame$traffic, list(frame$year, frame$company), sum)
+  colnames(res) <- c("year", "company", "traffic")
+  res$dominance <- apply(res, 1, calc_dominance, df=res)
+  
+  ggplot(res, aes(year,fill=company))+geom_bar(aes(weight=dominance),position="stack") + ggtitle("Market Dominance By Year")+scale_x_continuous(breaks = round(seq(2017, 2022, by = 1),1)) + ylab("traffic") + theme(legend.key.size = unit(0.35, 'cm'))
+}
+
+calc_dominance <- function(row, df) {
+  year <- as.numeric(row["year"])
+  return(as.numeric(row["traffic"]) / sum(df[df$year == year,]$traffic))
+}
+
+get_specific_companies <- function(frame, specs) {
+  result <- data.frame()
+  for (c in specs) {
+    company_name <- c[1]
+    subcats <- c[2:length(c)]
+    rows <- frame[which(frame$company==company_name & frame$subcategory %in% subcats), ]
+    result <- rbind(result, rows)
+  }
+  return(result)
+}
+
+
+```
+
+
+```{r}
+# selecting all companies - worker sites if available, otherwise all
+# excluding fiverr and upwork due to super large traffic & not all of it is for the invisible population we are interested in studying
+companies <- list(c("2captcha", "all"),
+               c("appen", "china", "annotate", "connect"),
+               c("clickworkers", "all"),
+               c("guru", "all"),
+               c("hive", "worker"),
+               c("isahit", "all"),
+               c("kolotibablo", "all"),
+               c("microworkers", "all"),
+               c("mturk", "worker"),
+               c("uhrs", "all"),
+               c("premise", "worker"),
+               c("raterhub", "all"),
+               c("scale", "worker"),
+               c("superannotate", "all"),
+               c("teemwork", "all"),
+               c("telus", "all"),
+               c("toloka", "worker"),
+               c("wirk", "all"))
+
+df_workers_all <- get_specific_companies(df, companies)
+
+```
+
+
+```{r}
+plot_traffic(df_workers_all)
+```
+
+
+```{r}
+plot_dominance(df_workers_all)
+```
+
+
+```{r}
+dfm_workers_all <- get_specific_companies(dfm, companies)
+plot_traffic_monthly(dfm_workers_all)
+```
+
+
+```{r}
+# Sum traffic across countries for each site and year combination
+traffic_data_agg <- df_workers_all %>%
+  group_by(year, company) %>%
+  summarize(traffic = sum(traffic)) %>%
+  ungroup()
+
+# Create a list to store the pie charts
+pie_charts <- list()
+
+# Create a custom color palette
+color_palette <- scales::hue_pal()(length(unique(traffic_data_agg$company)))
+
+# Assign colors to sites
+site_colors <- setNames(color_palette, unique(traffic_data_agg$company))
+
+# Loop through the unique years in the data
+for (current_year  in unique(traffic_data_agg$year)) {
+  # Filter the data for the current year
+  data_year <- traffic_data_agg %>%
+    filter(year == current_year ) %>%
+    mutate(percentage = traffic / sum(traffic)) %>%
+    arrange(desc(percentage))
+  data_year <- head(data_year, 5)
+  # Create the pie chart
+  pie_chart <- ggplot(data_year, aes(x = "", y = percentage, fill = company)) +
+    geom_col(width = 1, color="black") +
+    coord_polar("y", start = 0) +
+    theme_void() +
+    ggtitle( current_year ) +
+    scale_fill_manual(values = site_colors)
+
+  
+  # Add the combined chart to the list
+  pie_charts[[as.character(current_year)]] <- pie_chart
+}
+
+# Arrange the pie charts in a 2x3 grid
+grid.arrange(grobs = pie_charts, ncol = 3, nrow = 2)
+```

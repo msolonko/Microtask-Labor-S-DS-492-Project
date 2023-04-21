@@ -1,0 +1,98 @@
+---
+title: "Semrush Similarweb Comparison"
+author: "Mykyta Solonko"
+date: "3/1/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+```
+
+
+# Loading Data
+```{r}
+semrush_m <- read.csv("../data/Sync/Data/monthly/all_data.csv")
+semrush_a <- read.csv("../data/Sync/Data/annual/all_data.csv")
+similarweb <- read.csv("../data/Sync/Data/similarweb/all_data.csv")
+
+semrush_m <- semrush_m[semrush_m$country_traffic_share >= 0.01,]
+semrush_a <- semrush_a[semrush_a$country_traffic_share >= 0.01,]
+similarweb <- similarweb[similarweb$country_traffic_share >= 0.01,]
+
+# outlier that affects plots and correlation
+exclude_companies <- c("toloka")
+semrush_m <- subset(semrush_m, !(semrush_m$company %in% exclude_companies))
+semrush_a <- subset(semrush_a, !(semrush_a$company %in% exclude_companies))
+similarweb <- subset(similarweb, !(similarweb$company %in% exclude_companies))
+
+```
+
+
+# Functions to compare and plot metrics
+```{r}
+compare_metric <- function(se_df, si_df, metric) {
+  df1 <- subset(se_df, select = c("country", "company", "subcategory", metric))
+  df2 <- subset(si_df, select = c("country", "company", "subcategory", metric))
+  return(merge(df1, df2, by=c("country", "company", "subcategory"), suffixes=c(".se",".si")))
+}
+
+compare_all_metrics <- function(se_df, si_df, title) {
+    for (metric in c("bounce_rate", "country_traffic_share", "avg_visit_length", "pages_per_visit")) {
+    res <- compare_metric(se_df, si_df, metric)
+    col_se <- paste0(metric, ".se")
+    col_si <- paste0(metric, ".si")
+    data <- data.frame(x=res[[col_si]], y=res[[col_se]])
+    p <- ggplot(data, aes(x=x, y=y)) + 
+  geom_point(size = 3, color = "blue") + 
+  theme(panel.background = element_rect(fill = "#eeeeee")) +
+      ggtitle(paste0(title, " - ", metric, ". Cor: ", round(cor(res[[col_se]], res[[col_si]], use="complete.obs"), 3)))+
+      xlab("Similarweb") + 
+      ylab("Semrush")
+    print(p)
+    
+    
+    
+    p <- ggplot(data, aes(x=log(x), y=log(y))) + 
+   geom_point(size = 3, color = "blue") + 
+  theme(panel.background = element_rect(fill = "#eeeeee")) +
+      ggtitle(paste0(title, " - ", metric, " (log). Cor: ", round(cor(log(res[[col_se]]), log(res[[col_si]]), use="complete.obs"), 3)))+
+      xlab("Similarweb") + 
+      ylab("Semrush")
+    print(p)
+
+  }
+}
+```
+
+
+# Comparing 2022 Semrush Measurements with Similarweb (Nov22-Jan23) by platform.
+```{r}
+semrush2022 <- semrush_a[semrush_a$year == 2022,]
+```
+
+```{r}
+compare_all_metrics(semrush2022, similarweb, "2022 Semrush vs. Similarweb")
+```
+
+
+# Comparing Recent Semrush Measurements with Similarweb (Nov22-Jan23) by platform.
+```{r}
+# get the most recent data (that closely lines up with similarweb data)
+semrushm_recent <- semrush_m[semrush_m$year == 2022 & semrush_m$month > 9,]
+
+
+semrushm_recent %>%
+  group_by(company, subcategory, country) %>%
+  summarize(bounce_rate = mean(bounce_rate),
+            country_traffic_share = mean(country_traffic_share),
+            avg_visit_length = mean(avg_visit_length),
+            pages_per_viist = mean(pages_per_visit))
+```
+
+```{r}
+compare_all_metrics(semrushm_recent, similarweb, "Recent Semrush vs Similarweb")
+```
+

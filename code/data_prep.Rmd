@@ -1,0 +1,200 @@
+---
+title: "Data Prep"
+author: "Mykyta Solonko"
+date: "3/1/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(dplyr)
+library(DescTools)
+library(countrycode)
+```
+## Cleaning and Combining Data
+This file was used to clean some of the data. Specifically, I used some of the functions defined here to combine Semrush and Similarweb data into one dataset as well as make other datasets we used easier to work with. The data is already in the repo, so none of this needs to run, and this document is not meant to be run again. I have not really maintained it, so it may no longer work if data has been moved around or dataset changed.
+
+File renaming
+```{r}
+files_path <- "../data/Sync/Data/monthly"
+csv_files <- list.files(files_path, recursive = T, pattern="*.csv")
+for (filename in csv_files) {
+  regex_year <- regexpr("\\d{4}", filename)
+  year <- substr(filename, regex_year, regex_year+3)
+  regex_month <- regexpr("\\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\\b", filename)
+  month <- substr(filename, regex_month, regex_month + 2)
+  split <- strsplit(filename, "/")[[1]]
+  path2 <- paste0(split[1:length(split)-1], "/", collapse = '')
+  path2 <- substr(path2, 1, nchar(path2)-1)
+  # file.rename(paste0(files_path, "/", filename), paste0(files_path, "/", path2, "/", paste0(month,year, ".csv")))
+}
+```
+
+```{r}
+files_path <- "../data/Sync/Data/similarweb"
+csv_files <- list.files(files_path, recursive = T, pattern="*.xlsx")
+for (filename in csv_files) {
+  split <- strsplit(filename, "/")[[1]]
+  path2 <- paste0(split[1:length(split)-1], "/", collapse = '')
+  path2 <- substr(path2, 1, nchar(path2)-1)
+  # file.rename(paste0(files_path, "/", filename), paste0(files_path, "/", path2, "/", "data.xlsx"))
+}
+```
+
+These are helper functions to help with the data cleaning
+```{r}
+# convert hh:mm:ss or mm:ss format to minutes
+time_to_minutes <- function(time) {
+  split <- strsplit(time, ":")[[1]]
+  if (length(split) == 3) {
+    return(as.numeric(split[1]) * 60 + as.numeric(split[2]) + as.numeric(split[3])/60)
+  }
+  return (as.numeric(split[1]) + as.numeric(split[2])/60)
+}
+
+# if country share is NA, find valid row for another country and calculate missing country share using it
+fix_country_share <- function(row, frame) {
+  if (!is.na(row["country_traffic_share"])) {
+    return(as.numeric(row["country_traffic_share"]))
+  }
+  year <- row["year"]
+  amt <- as.numeric(row["traffic"])
+  site <- row["company"]
+  subcat <- row["subcategory"]
+  reference_rows <- frame[which(frame$year==year & frame$company==site & frame$subcategory==subcat),]
+  reference_rows <- reference_rows[!is.na(reference_rows$country_traffic_share),]
+  ref_traffic <- reference_rows[1,]$traffic
+  ref_share <- reference_rows[1,]$country_traffic_share
+  return(as.numeric(amt / (ref_traffic / ref_share)))
+}
+
+month_to_int <- function(month_abbr) {
+  months <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+  return(match(toupper(month_abbr), toupper(months)))
+}
+```
+
+```{r}
+# make dataframe with everything
+df <- data.frame(matrix(ncol = 12, nrow = 0))
+
+csv_files <- list.files(files_path, recursive = T, pattern="*.csv")
+
+for (file in csv_files) {
+    temp_df <- read.csv(paste0(files_path, "/", file))
+    split <- strsplit(file, "/")[[1]]
+    year <- substr(split[3], 1, 4)
+    site <- split[1]
+    subcategory <- split[2]
+    temp_df$year <- as.numeric(year)
+    temp_df$company <- site
+    temp_df$subcategory <- subcategory
+    df <- rbind(df, temp_df)
+}
+
+colnames(df) <- c("country", "country_traffic_share", "traffic", "unique_visitors", "desktop_share", "mobile_share", "pages_per_visit", "avg_visit_length", "bounce_rate", "year", "company", "subcategory")
+
+df <- df[, c(11, 12, 10, 1, 2, 3, 4, 5, 6, 7, 8, 9)]
+pct_cols <- c("country_traffic_share", "desktop_share", "mobile_share", "bounce_rate")
+to_num_cols <- c("traffic", "unique_visitors", "pages_per_visit")
+
+for (col in pct_cols) {
+  df[col] <- as.numeric(gsub("%", "", df[,col]))/100
+}
+for (col in to_num_cols) {
+  df[col] <- as.numeric(df[,col])
+}
+
+df$avg_visit_length <- sapply(df$avg_visit_length, time_to_minutes)
+df$country_traffic_share <- apply(df, 1, fix_country_share, df=df)
+```
+
+
+
+```{r}
+get_duration_minutes_from_timestamp <- function(val) {
+  val <- as.POSIXct(val)
+  h <- as.numeric(format(val, format = "%H"))
+  m <- as.numeric(format(val, format = "%M"))
+  s <- as.numeric(format(val, format = "%S"))
+  return(h * 60 + m + s / 60)
+}
+```
+
+Combining all similarweb data into one file
+```{r}
+files_path <- "../data/Sync/Data/similarweb"
+df <- data.frame()
+
+csv_files <- list.files(files_path, recursive = T, pattern="*xlsx")
+
+for (file in csv_files) {
+    temp_df <- data.frame(read_excel(paste0(files_path, "/", file), sheet=2))
+    split <- strsplit(file, "/")[[1]]
+    site <- split[1]
+    subcategory <- split[2]
+    temp_df$company <- site
+    temp_df$subcategory <- subcategory
+    df <- rbind(df, temp_df)
+}
+
+colnames(df) <- c("country", "country_traffic_share", "change", "country_rank", "avg_visit_length", "pages_per_visit", "bounce_rate", "company", "subcategory")
+
+df$avg_visit_length <- sapply(df$avg_visit_length, get_duration_minutes_from_timestamp)
+
+df <- subset(df, select = c("company", "subcategory", "country", "country_traffic_share", "avg_visit_length", "pages_per_visit", "bounce_rate"))
+
+df$bounce_rate <- as.numeric(df$bounce_rate)
+```
+
+```{r}
+get_country_code <- function(country_name) {
+  return(tolower(countrycode(sourcevar = country_name, 
+              origin = "country.name", 
+              destination = "iso2c")))
+}
+
+convert_country_code <- function(country_iso3) {
+  country_iso2 <- countrycode(sourcevar = country_iso3, origin = "iso3c", destination = "iso2c")
+  return(tolower(country_iso2))
+}
+
+```
+
+```{r}
+df$country <- sapply(df$country, get_country_code)
+# write.csv(df, "../data/Sync/Data/similarweb/all_data.csv", row.names = F)
+```
+
+
+COVID data
+```{r}
+# covid <- read.csv("../data/Sync/Data/owid-covid-data.csv")
+```
+
+```{r}
+clean_covid <- subset(covid, select = c("iso_code", "location", "date", "new_cases", "total_cases", "life_expectancy", "population", "human_development_index", "gdp_per_capita", "extreme_poverty"))
+clean_covid$year <- lubridate::year(clean_covid$date)
+clean_covid$month <- lubridate::month(clean_covid$date)
+clean_covid <- clean_covid[nchar(clean_covid$iso_code) == 3,]
+
+covid_monthly <- clean_covid %>%
+  group_by(year, month, iso_code, location) %>%
+  summarize(
+            new_cases = sum(new_cases, na.rm = T),
+            total_cases = max(total_cases),
+            life_expectancy = Mode(life_expectancy),
+            population = Mode(population),
+            human_development_index = Mode(human_development_index),
+            gdp_per_capita = Mode(gdp_per_capita),
+            extreme_poverty = Mode(extreme_poverty))
+
+
+covid_monthly$iso_code <- sapply(covid_monthly$iso_code, convert_country_code)
+
+```
+
+```{r}
+# write.csv(covid_monthly, "../data/Sync/Data/covid_monthly.csv", row.names = F)
+```

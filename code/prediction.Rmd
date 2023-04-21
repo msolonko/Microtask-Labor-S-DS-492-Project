@@ -1,0 +1,284 @@
+---
+title: "Time Series"
+author: "Mykyta Solonko"
+date: '2023-03-09'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Import necessary libraries
+library(forecast)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(ggcorrplot)
+library(tsibble)
+library(GGally)
+library(corrplot)
+```
+
+
+
+```{r}
+# Load the data
+df <- read.csv('../data/Sync/data/monthly/all_data.csv')
+df_annual <- read.csv('../data/Sync/data/annual/all_data.csv')
+covid <- read.csv('../data/Sync/data/covid_monthly.csv')
+gdps <- read.csv('../data/Sync/data/world_bank_gdps.csv')
+dep_ratios <- read.csv('../data/Sync/data/dependency_ratios.csv')
+hh_size <- read.csv('../data/Sync/data/household_size.csv')
+```
+
+
+# Analyzing countries that had a peak and were potentially targeted intentionally
+```{r}
+adoption_countries <- c("ph", "us", "vn", "pk", "in", "ve", "id", "bd", "bg", "np", "co", "ro", "mx", "ke")
+data <- covid %>%
+  group_by(iso_code) %>%
+  slice(1)
+
+data <- data[,c("iso_code","life_expectancy", "population", "human_development_index", "gdp_per_capita")]
+data$targeted <- data$iso_code %in% adoption_countries
+data <- subset(data, !is.na(life_expectancy) & !is.na(human_development_index) & !is.na(gdp_per_capita))
+data <- left_join(data, gdps, by=c('iso_code'='country_code'))
+
+```
+
+
+
+```{r}
+ggplot(data, aes(x = log(gdp_2021), y = human_development_index, color = targeted)) +
+ geom_point(aes(size = gdp_per_capita)) +
+  labs(x = "Log(GDP)", y = "HDI", title = "Targeted Countries") +
+ theme_classic()+
+  scale_color_manual(values = c("#888888", "#22cc00"))+
+     geom_label_repel(aes(label = ifelse(targeted, iso_code, '')),
+                 box.padding   = 0.35, 
+                 point.padding = 0.5,
+                 # nudge_x = -4,
+                 # nudge_y = 0.07,
+                 max.overlaps=100,
+                 segment.color = 'black',
+                 color="black")
+
+
+```
+
+### Making the actual model
+The goal is to take today's traffic, covid cases, as well as fixed gdp/hdi/life_expectancy figures and predict the next period's traffic using it.
+
+Starting with monthly data.
+```{r}
+df <- left_join(df, covid, by=c('country'='iso_code', 'year'='year', 'month'='month'))
+df <- left_join(df, gdps, by=c('country'='country_code'))
+df <- left_join(df, dep_ratios, by=c('country'='country_code'))
+colnames(df)[colnames(df) == "ratio_2021"] <- "dep_ratio"
+df <- left_join(df, hh_size, by=c('country'='country_code'))
+df$date <- as.Date(paste(df$year, df$month, "1", sep="-"), format="%Y-%m-%d")
+df$traffic_ratio <- df$traffic / df$population
+```
+
+```{r}
+# need next traffic predictor variable in each row
+df <- df %>% 
+  arrange(country, subcategory, company, date) %>%  # sort by country, website, and date
+  group_by(country, subcategory, company) %>%
+  mutate(future_traffic = lead(traffic), future_date = lead(date))
+
+# exclude the usa
+df <- subset(df, country != 'us')
+df <- df[!is.na(df$new_cases) & !is.na(df$future_traffic),]
+```
+
+```{r}
+df$log_future <- log(df$future_traffic)
+df$log_gdp <- log(df$gdp_2021)
+df$log_capita <- log(df$gdp_per_capita)
+df$log_cases <- log(df$new_cases + 1)
+df$log_traffic <- log(df$traffic)
+df$log_population <- log(df$population)
+df$traffic_pct <- df$traffic / df$population
+df$future_pct <- df$future_traffic / df$population
+
+# remove outliers
+df <- df[df$traffic < 4e7 & df$future_traffic < 4e7,]
+
+```
+
+
+```{r}
+# Create list of plots
+plots <- lapply(c("log_traffic", "life_expectancy", "log_capita", "log_gdp", "log_population", "log_cases"), function(x) {
+  
+  # Create plot with regression line
+  ggplot(df, aes(x = df[[x]], y = df$log_future)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, color="#99ff55") +
+    labs(x = x, y = "log(future_traffic)")
+})
+
+# Combine plots into a grid
+gridExtra::grid.arrange(grobs = plots, nrow = 2)
+
+```
+
+```{r}
+plot(df$log_traffic, df$log_future)
+abline(lm(df$log_future ~ df$log_traffic), col="green", lwd=5)
+
+plot(df$life_expectancy, df$log_future)
+abline(lm(df$log_future ~ df$life_expectancy), col="green", lwd=5)
+
+plot(df$log_capita, df$log_future)
+abline(lm(df$log_future ~ df$log_capita), col="green", lwd=5)
+
+plot(df$log_gdp, df$log_future)
+abline(lm(df$log_future ~ df$log_gdp), col="green", lwd=5)
+
+plot(df$log_population, df$log_future)
+abline(lm(df$log_future ~ df$log_population), col="green", lwd=5)
+
+plot(df$log_cases, df$log_future)
+abline(lm(df$log_future ~ df$log_cases), col="green", lwd=5)
+
+
+plot(df$log_cases, df$log_future)
+abline(lm(df$log_future ~ df$log_cases), col="green", lwd=5)
+
+
+plot(df$dep_ratio, df$log_future)
+abline(lm(df$log_future ~ df$dep_ratio), col="green", lwd=5)
+
+plot(df$avg_hh_size, df$log_future)
+abline(lm(df$log_future ~ df$avg_hh_size), col="green", lwd=5)
+```
+
+
+
+
+## annual data
+```{r}
+covid_annual <- covid %>%
+  group_by(iso_code, year) %>%
+  summarise(new_cases = sum(new_cases),
+            population = first(population),
+            life_expectancy = first(life_expectancy),
+            human_development_index = first(human_development_index),
+            gdp_per_capita = first(gdp_per_capita),
+            extreme_poverty = first(extreme_poverty))
+
+df_annual <- left_join(df_annual, covid_annual, by=c('country'='iso_code', 'year'='year'))
+df_annual <- left_join(df_annual, gdps, by=c('country'='country_code'))
+df_annual <- left_join(df_annual, dep_ratios, by=c('country'='country_code'))
+colnames(df_annual)[colnames(df_annual) == "ratio_2021"] <- "dep_ratio"
+df_annual <- left_join(df_annual, hh_size, by=c('country'='country_code'))
+df_annual$date <- as.Date(paste(df_annual$year, "1", "1", sep="-"), format="%Y-%m-%d")
+df_annual$traffic_ratio <- df_annual$traffic / df_annual$population
+
+# need next traffic predictor variable in each row
+df_annual <- df_annual %>% 
+  arrange(country, subcategory, company, date) %>%  # sort by country, website, and date
+  group_by(country, subcategory, company) %>%
+  mutate(future_traffic = lead(traffic), future_date = lead(date))
+
+# exclude the usa
+df_annual <- subset(df_annual, country != 'us')
+df_annual <- df_annual[!is.na(df_annual$new_cases) & !is.na(df_annual$future_traffic),]
+
+```
+
+
+```{r}
+df_annual$log_future <- log(df_annual$future_traffic)
+df_annual$log_gdp <- log(df_annual$gdp_2021)
+df_annual$log_capita <- log(df_annual$gdp_per_capita)
+df_annual$log_cases <- log(df_annual$new_cases + 1)
+df_annual$log_traffic <- log(df_annual$traffic)
+df_annual$log_population <- log(df_annual$population)
+df_annual$traffic_pct <- df_annual$traffic / df_annual$population
+df_annual$future_pct <- df_annual$future_traffic / df_annual$population
+
+# remove outliers
+# df <- df[df$traffic < 4e7 & df$future_traffic < 4e7,]
+```
+
+
+
+```{r}
+plot(df_annual$log_traffic, df_annual$log_future)
+abline(lm(df_annual$log_future ~ df_annual$log_traffic), col="green", lwd=5)
+
+plot(df_annual$life_expectancy, df_annual$log_future)
+abline(lm(df_annual$log_future ~ df_annual$life_expectancy), col="green", lwd=5)
+
+plot(df_annual$log_capita, df_annual$log_future)
+abline(lm(df_annual$log_future ~ df_annual$log_capita), col="green", lwd=5)
+
+plot(df_annual$log_gdp, df_annual$log_future)
+abline(lm(df_annual$log_future ~ df_annual$log_gdp), col="green", lwd=5)
+
+plot(df_annual$log_population, df_annual$log_future)
+abline(lm(df_annual$log_future ~ df_annual$log_population), col="green", lwd=5)
+
+plot(df_annual$log_cases, df_annual$log_future)
+abline(lm(df_annual$log_future ~ df_annual$log_cases), col="green", lwd=5)
+
+plot(df_annual$dep_ratio, df_annual$log_future)
+abline(lm(df_annual$log_future ~ df_annual$dep_ratio), col="green", lwd=5)
+
+plot(df_annual$avg_hh_size, df_annual$log_future)
+abline(lm(df_annual$log_future ~ df_annual$avg_hh_size), col="green", lwd=5)
+```
+
+```{r}
+
+# Create list of plots
+plots <- lapply(c("log_traffic", "life_expectancy", "log_capita", "log_gdp", "log_population", "log_cases"), function(x) {
+  
+  # Create plot with regression line
+  ggplot(df_annual, aes(x = df_annual[[x]], y = df_annual$log_future)) +
+    geom_point() +
+    geom_smooth(method = "lm", se = FALSE, color="#99ff55") +
+    labs(x = x, y = "log(future_traffic)")
+})
+
+# Combine plots into a grid
+gridExtra::grid.arrange(grobs = plots, nrow = 2)
+
+```
+
+```{r}
+# Specify the columns you want to include in the correlation matrix
+cols <- c("log_population", "log_gdp", "log_capita", "log_future", "log_traffic", "life_expectancy", "log_cases", "traffic_pct", "future_pct", "dep_ratio", "avg_hh_size")
+df_clean <- df_annual[complete.cases(df_annual[, cols]), ]
+
+
+# Create the correlation matrix
+cor_matrix <- cor(df_clean[, cols])
+
+# Plot the correlation matrix
+ggcorrplot(cor_matrix, method = "square", hc.order = TRUE,
+           type = "lower", ggtheme = ggplot2::theme_classic)
+```
+
+```{r}
+mat <- df_annual[c("log_future", "log_traffic", "log_population", "log_cases", "log_gdp", "log_capita", "life_expectancy", "traffic_pct", "dep_ratio", "avg_hh_size")]
+mat <- mat[complete.cases(mat),]
+testRes = cor.mtest(mat, conf.level = 0.95)
+
+
+# Create a correlation matrix
+corr_matrix <- cor(mat)
+
+corrplot(corr_matrix, p.mat=testRes$p, sig.level=0.05, method = 'ellipse', order = 'AOE', type = 'upper', insig='blank')
+
+
+
+```
+
+```{r}
+mod <- lm(log_future ~ log_traffic + log_gdp + log_population + log_cases, data=df_annual)
+print(summary(mod))
+```

@@ -1,0 +1,107 @@
+---
+title: "Country Patterns"
+author: "Mykyta Solonko"
+date: "3/8/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.height=8)
+rm(list=ls())
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+```
+
+
+
+```{r}
+df <- read.csv(file = '../data/Sync/data/annual/all_data.csv')
+dfm <- read.csv(file = '../data/Sync/data/monthly/all_data.csv')
+```
+
+```{r}
+plot_top_countries <- function(df, company, subcat, traffic_cutoff=0.05, monthly=FALSE) {
+  df <- df[df$subcategory == subcat & df$company == company,]
+
+  grouped <- df %>%
+  group_by(country) %>%
+  summarise(traffic = sum(traffic))
+  
+  grouped$traffic_share <- grouped$traffic / sum(grouped$traffic)
+  
+  countries <- grouped[grouped$traffic_share > traffic_cutoff,]$country
+
+  if (monthly) {
+    df$date <- as.Date(paste(df$year, df$month, "1", sep="-"), format="%Y-%m-%d")
+  }
+  else {
+    df$date <- as.Date(paste(df$year, "1", "1", sep="-"), format="%Y-%m-%d")
+  }
+  graphs <- list()
+  i <- 1
+  
+
+  for (country in countries) {
+    temp_df <- df[df$country == country,]
+    if (nrow(temp_df) < 2) {
+      next
+    }
+    date_break <- "1 year"
+    date_label <- "%Y"
+    if (monthly) {
+      date_break <- "6 month"
+      date_label <- "%b %Y"
+    }
+    
+    p <- ggplot(temp_df, aes(x = date, y = traffic)) +
+  geom_line(color = "blue", linewidth=1.5) +
+  labs(title = paste0(company, "/", subcat, " traffic: ", country),
+       x = "Date",
+       y = "Traffic") +
+  theme_bw() +
+  theme(panel.grid.major = element_line(color = "grey", linetype = "dashed"),
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(fill = "white"),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_date(date_breaks = date_break, date_labels = date_label)
+    graphs[[i]] <- p
+    i <- i + 1
+  }
+  
+ 
+   
+  if (length(graphs) > 1) {
+    grid.arrange(grobs = graphs, ncol = 2)
+  }
+  
+  
+}
+```
+
+
+# Monthly Plots
+```{r}
+companies <- unique(dfm$company)
+for (c in companies) {
+  subcats <- unique(dfm[dfm$company == c,]$subcategory)
+  for (s in subcats) {
+    plot_top_countries(dfm, c, s, monthly=T)
+  }
+}
+```
+
+
+```{r}
+companies <- unique(df$company)
+for (c in companies) {
+  subcats <- unique(df[df$company == c,]$subcategory)
+  for (s in subcats) {
+    plot_top_countries(df, c, s, monthly=F)
+  }
+}
+
+# recruitment platforms: hive, scale (remotetasks), microworkers, appen
+```
+
+
